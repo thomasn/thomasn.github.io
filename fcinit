@@ -9,16 +9,20 @@
 #   bash fcinit
 #
 # What it does: full system upgrade, installs git/ansible/python/ruby, asks for
-# a read-only GitHub token (hidden; just press Enter if the repo is public),
-# runs ansible-pull with pull.yml, then sets thomasn's password if none is set.
-# Safe to run again. Holds no secrets; the token never touches disk, argv,
-# the clone URL or shell history.
+# a read-only GitHub token (hidden; just press Enter if the repo is public) and
+# an optional Tailscale auth key, runs ansible-pull with pull.yml, sets
+# thomasn's password if none is set, then joins the tailnet if not yet joined.
+# Safe to run again. Holds no secrets; neither secret touches argv, the clone
+# URL or shell history, and the Tailscale key only briefly sits in a root-only
+# file under /run (tmpfs) while `tailscale up` reads it.
 set -euo pipefail
 
 REPO_URL="https://github.com/thomasn/faerieconfig.git"
 BRANCH="main"                     # branch ansible-pull checks out
 CHECKOUT_DIR="/var/lib/faerieconfig"
 ADMIN_USER="thomasn"              # must match admin_users in pull.yml
+TS_UP_ARGS=(--ssh)                # keep in step with tailscale_up_args (role)
+TS_KEY_FILE="/run/tailscale-authkey"
 
 die() { echo "fcinit: $*" >&2; exit 1; }
 say() { printf '\n==> %s\n' "$*"; }
@@ -37,7 +41,8 @@ pacman -S --needed --noconfirm git ansible python ruby
 
 # --- 3. GitHub token (only reaches git, only for github.com) ------------------
 clear_git_auth() { unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; }
-trap clear_git_auth EXIT
+clear_secrets() { clear_git_auth; unset TAILSCALE_AUTHKEY; rm -f "$TS_KEY_FILE"; }
+trap clear_secrets EXIT
 export GIT_TERMINAL_PROMPT=0        # git must never prompt for credentials itself
 
 say "Checking access to $REPO_URL"
@@ -59,6 +64,12 @@ for attempt in 1 2 3; do
     [[ $attempt -lt 3 ]] || die "giving up"
 done
 
+# Optional: the tailscale role reads TAILSCALE_AUTHKEY from the environment.
+# Skipped here means: asked again at the end, once the box is otherwise ready.
+read -rsp "Tailscale auth key (Enter to skip; asked again at the end): " TAILSCALE_AUTHKEY <&3
+echo
+export TAILSCALE_AUTHKEY
+
 # --- 4. Cold start -------------------------------------------------------------
 say "Running ansible-pull ($BRANCH, pull.yml)"
 # --clean: force the checkout to match the branch. ansible-pull clones shallow,
@@ -68,6 +79,7 @@ ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3 \
 ANSIBLE_INVENTORY_UNPARSED_WARNING=False \
     ansible-pull --clean -U "$REPO_URL" -C "$BRANCH" -d "$CHECKOUT_DIR" -i localhost, pull.yml
 clear_git_auth
+unset TAILSCALE_AUTHKEY
 
 # --- 5. Password for sudo (never stored anywhere) ------------------------------
 id "$ADMIN_USER" >/dev/null 2>&1 || die "user $ADMIN_USER was not created -- check the ansible-pull output"
@@ -78,10 +90,26 @@ if [[ $(passwd -S "$ADMIN_USER" | awk '{print $2}') != P ]]; then
     done
 fi
 
-# --- 6. Next steps -------------------------------------------------------------
-cat <<EOF
+# --- 6. Tailnet (if the role did not join it already) --------------------------
+ts_state() { tailscale status --json 2>/dev/null | jq -r '.BackendState // empty'; }
+if [[ $(ts_state) != Running ]]; then
+    say "Join the tailnet"
+    read -rsp "Tailscale auth key (Enter to log in with a browser link instead): " ts_key <&3
+    echo
+    if [[ -n $ts_key ]]; then
+        install -m 600 /dev/null "$TS_KEY_FILE"
+        printf '%s' "$ts_key" > "$TS_KEY_FILE"   # printf is a builtin: not in argv
+        unset ts_key
+        tailscale up "${TS_UP_ARGS[@]}" --auth-key="file:$TS_KEY_FILE" ||
+            echo "fcinit: tailscale up failed; run it again later" >&2
+        rm -f "$TS_KEY_FILE"
+    else
+        unset ts_key
+        tailscale up "${TS_UP_ARGS[@]}" ||
+            echo "fcinit: tailscale up failed; run it again later" >&2
+    fi
+fi
 
-==> Done. Next:
-    tailscale up                  # join the tailnet (browser login or --authkey)
-    ssh $ADMIN_USER@<this box>    # from Tyche, then: sudo -v
-EOF
+# --- 7. Next steps -------------------------------------------------------------
+say "Done. Tailnet: $(ts_state || true)"
+echo "    Next, from Tyche:  ssh $ADMIN_USER@$(uname -n)   then: sudo -v"
