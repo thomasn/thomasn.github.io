@@ -3,6 +3,7 @@
 # Published as https://thomasn.github.io/fcinit (a copy of scripts/bootstrap.sh).
 # At a fresh root prompt, type:
 #
+#   cd ~                    # WSL may start in an unwritable /mnt/c/... directory
 #   curl -fsSLo fcinit https://thomasn.github.io/fcinit
 #   more fcinit
 #   bash fcinit
