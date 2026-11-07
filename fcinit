@@ -16,7 +16,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/thomasn/faerieconfig.git"
-BRANCH="bootstrap-test"           # switch to main once the bootstrap is proven
+BRANCH="main"                     # branch ansible-pull checks out
 CHECKOUT_DIR="/var/lib/faerieconfig"
 ADMIN_USER="thomasn"              # must match admin_users in pull.yml
 
