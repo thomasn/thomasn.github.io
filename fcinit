@@ -61,9 +61,12 @@ done
 
 # --- 4. Cold start -------------------------------------------------------------
 say "Running ansible-pull ($BRANCH, pull.yml)"
+# --clean: force the checkout to match the branch. ansible-pull clones shallow,
+# so without it a re-run can't prove the old HEAD is an ancestor of the new one
+# and refuses to update ("local commits will be lost"). Nobody edits this dir.
 ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3 \
 ANSIBLE_INVENTORY_UNPARSED_WARNING=False \
-    ansible-pull -U "$REPO_URL" -C "$BRANCH" -d "$CHECKOUT_DIR" -i localhost, pull.yml
+    ansible-pull --clean -U "$REPO_URL" -C "$BRANCH" -d "$CHECKOUT_DIR" -i localhost, pull.yml
 clear_git_auth
 
 # --- 5. Password for sudo (never stored anywhere) ------------------------------
