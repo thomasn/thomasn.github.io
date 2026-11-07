@@ -1,0 +1,83 @@
+#!/bin/bash
+# fcinit -- faerieconfig cold start for a fresh Arch box (Linode or scratch).
+# Published as https://thomasn.github.io/fcinit (a copy of scripts/bootstrap.sh).
+# At a fresh root prompt, type:
+#
+#   curl -fsSLo fcinit https://thomasn.github.io/fcinit
+#   more fcinit
+#   bash fcinit
+#
+# What it does: full system upgrade, installs git/ansible/python/ruby, asks for
+# a read-only GitHub token (hidden; just press Enter if the repo is public),
+# runs ansible-pull with pull.yml, then sets thomasn's password if none is set.
+# Safe to run again. Holds no secrets; the token never touches disk, argv,
+# the clone URL or shell history.
+set -euo pipefail
+
+REPO_URL="https://github.com/thomasn/faerieconfig.git"
+BRANCH="bootstrap-test"           # switch to main once the bootstrap is proven
+CHECKOUT_DIR="/var/lib/faerieconfig"
+ADMIN_USER="thomasn"              # must match admin_users in pull.yml
+
+die() { echo "fcinit: $*" >&2; exit 1; }
+say() { printf '\n==> %s\n' "$*"; }
+
+# --- 1. Preflight --------------------------------------------------------------
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ -r /etc/arch-release ]] || die "Arch Linux only"
+# Prompts read from the terminal, so this also works under curl | bash.
+exec 3</dev/tty || die "needs an interactive terminal (/dev/tty)"
+
+# --- 2. System upgrade and tools ----------------------------------------------
+say "Refreshing keyring and upgrading the system"
+pacman -Sy --needed --noconfirm archlinux-keyring
+pacman -Su --noconfirm              # Arch does not support partial upgrades
+pacman -S --needed --noconfirm git ansible python ruby
+
+# --- 3. GitHub token (only reaches git, only for github.com) ------------------
+clear_git_auth() { unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; }
+trap clear_git_auth EXIT
+export GIT_TERMINAL_PROMPT=0        # git must never prompt for credentials itself
+
+say "Checking access to $REPO_URL"
+for attempt in 1 2 3; do
+    read -rsp "GitHub read-only token (Enter if the repo is public): " token <&3
+    echo
+    clear_git_auth
+    if [[ -n $token ]]; then
+        export GIT_CONFIG_COUNT=1
+        export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+        GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$token" | base64 -w0)"
+        export GIT_CONFIG_VALUE_0
+    fi
+    unset token
+    if git ls-remote --exit-code "$REPO_URL" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+        break
+    fi
+    echo "fcinit: cannot read branch $BRANCH (bad or missing token, or no network) -- attempt $attempt of 3" >&2
+    [[ $attempt -lt 3 ]] || die "giving up"
+done
+
+# --- 4. Cold start -------------------------------------------------------------
+say "Running ansible-pull ($BRANCH, pull.yml)"
+ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3 \
+ANSIBLE_INVENTORY_UNPARSED_WARNING=False \
+    ansible-pull -U "$REPO_URL" -C "$BRANCH" -d "$CHECKOUT_DIR" -i localhost, pull.yml
+clear_git_auth
+
+# --- 5. Password for sudo (never stored anywhere) ------------------------------
+id "$ADMIN_USER" >/dev/null 2>&1 || die "user $ADMIN_USER was not created -- check the ansible-pull output"
+if [[ $(passwd -S "$ADMIN_USER" | awk '{print $2}') != P ]]; then
+    say "Set a password for $ADMIN_USER (needed for sudo)"
+    until passwd "$ADMIN_USER" <&3; do
+        echo "fcinit: try again" >&2
+    done
+fi
+
+# --- 6. Next steps -------------------------------------------------------------
+cat <<EOF
+
+==> Done. Next:
+    tailscale up                  # join the tailnet (browser login or --authkey)
+    ssh $ADMIN_USER@<this box>    # from Tyche, then: sudo -v
+EOF
