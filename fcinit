@@ -77,7 +77,7 @@ say "Running ansible-pull ($BRANCH, pull.yml)"
 # and refuses to update ("local commits will be lost"). Nobody edits this dir.
 ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3 \
 ANSIBLE_INVENTORY_UNPARSED_WARNING=False \
-    ansible-pull --clean -U "$REPO_URL" -C "$BRANCH" -d "$CHECKOUT_DIR" -i localhost, pull.yml
+    ansible-pull --clean -U "$REPO_URL" -C "$BRANCH" -d "$CHECKOUT_DIR" -i localhost, -l localhost pull.yml
 clear_git_auth
 unset TAILSCALE_AUTHKEY
 
