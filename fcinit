@@ -92,7 +92,14 @@ fi
 
 # --- 6. Tailnet (if the role did not join it already) --------------------------
 ts_state() { tailscale status --json 2>/dev/null | jq -r '.BackendState // empty'; }
-if [[ $(ts_state) != Running ]]; then
+# A kernel upgrade during the run removes the running kernel's modules, so
+# tailscaled can't create its tun device until the box is rebooted.
+REBOOT_PENDING=
+[[ -d /usr/lib/modules/$(uname -r) ]] || REBOOT_PENDING=1
+if [[ -n $REBOOT_PENDING ]]; then
+    say "Kernel upgraded: reboot before joining the tailnet"
+    echo "    Run: reboot   then, as root: tailscale up ${TS_UP_ARGS[*]}"
+elif [[ $(ts_state) != Running ]]; then
     say "Join the tailnet"
     read -rsp "Tailscale auth key (Enter to log in with a browser link instead): " ts_key <&3
     echo
@@ -111,5 +118,5 @@ if [[ $(ts_state) != Running ]]; then
 fi
 
 # --- 7. Next steps -------------------------------------------------------------
-say "Done. Tailnet: $(ts_state || true)"
+say "Done. Tailnet: $(ts_state || true)${REBOOT_PENDING:+ (reboot pending)}"
 echo "    Next, from Tyche:  ssh $ADMIN_USER@$(uname -n)   then: sudo -v"
